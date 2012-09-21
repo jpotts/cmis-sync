@@ -1,5 +1,6 @@
+#!/usr/bin/env python
 from cmislib.model import CmisClient
-from cmislib.exceptions import ObjectNotFoundException
+from cmislib.exceptions import ObjectNotFoundException, CmisException
 from time import sleep
 import sys
 import os
@@ -40,7 +41,8 @@ def sync():
                           settings.TARGET_PASSWORD)
     targetRepo = targetClient.defaultRepository
     dumpRepoHeader(targetRepo, "TARGET")
-
+    print "    Path: %s" % settings.TARGET_ROOT
+    
     # Make sure target supports contentStreamUpdatability
     if (targetRepo.getCapabilities()['ContentStreamUpdatability'] !=
         'anytime'):
@@ -106,12 +108,13 @@ def processChange(change, sourceRepo, targetRepo):
         return
 
     sourcePath = sourceObj.getPaths()[0]  # Just deal with one path for now
-    print "Path: %s" % sourcePath
+    print "Source Path: %s" % sourcePath
+    targetPath = settings.TARGET_ROOT + sourcePath
 
     # Determine if the object exists in the target
     targetObj = None
     try:
-        targetObj = targetRepo.getObjectByPath(sourcePath)
+        targetObj = targetRepo.getObjectByPath(targetPath)
 
         # If it does, update its properties
 
@@ -124,8 +127,10 @@ def processChange(change, sourceRepo, targetRepo):
         sourceProps = sourceObj.properties
         props = {'cmis:name': sourceProps['cmis:name'],
                  'cmis:objectTypeId': sourceProps['cmis:objectTypeId']}
-        targetObj = createNewObject(targetRepo, sourcePath, props)
-
+        targetObj = createNewObject(targetRepo, targetPath, props)
+        if targetObj == None:
+            return
+        
     # Then, update its content if that is possible
     targetObj.reload()
     if (sourceObj.allowableActions['canGetContentStream'] == True and
@@ -149,10 +154,14 @@ def createNewObject(targetRepo, path, props):
     parentFolder = getParentFolder(targetRepo, parentPath)
     targetObj = None
     if (props['cmis:objectTypeId'] == 'cmis:document'):
-        targetObj = parentFolder.createDocumentFromString(
-            props['cmis:name'],
-            props,
-            contentString='')
+        try:
+            targetObj = parentFolder.createDocumentFromString(
+                props['cmis:name'],
+                props,
+                contentString='')
+        except CmisException:
+            print "ERROR: Exception creating object"
+            return None
     else:
         targetObj = parentFolder.createFolder(props['cmis:name'], props)
     return targetObj
