@@ -7,6 +7,17 @@ import os
 import pickle
 
 import settings
+import mapping
+
+'''
+for sourceTypeId in mapping.mapping.items():
+    print sourceTypeId[1]
+    print mapping.mapping.has_key('D:cmisbook:video')
+    for propKey in mapping.mapping['D:cmisbook:video']['properties'].keys():
+        print "key:%s value:%s" % (propKey, mapping.mapping['D:cmisbook:video']['properties'][propKey])
+    #print sourceTypeId['targetType']
+sys.exit(-1)
+'''
 
 SAVE_FILE = 'lastSync.p'
 
@@ -30,7 +41,7 @@ def sync():
 
     # Make sure it supports changes, bail if it does not
     if sourceRepo.getCapabilities()['Changes'] == None:
-        print "Source repository does not support changes"
+        print "Source repository does not support changes:" + sourceRepo.getCapabilities()['Changes']
         sys.exit(-1)
     latestChangeToken = sourceRepo.info['latestChangeLogToken']
     print "Latest change token: %s" % latestChangeToken
@@ -104,7 +115,8 @@ def processChange(change, sourceRepo, targetRepo):
         return
 
     if (sourceObj.properties['cmis:objectTypeId'] != 'cmis:document' and
-        sourceObj.properties['cmis:objectTypeId'] != 'cmis:folder'):
+        sourceObj.properties['cmis:objectTypeId'] != 'cmis:folder' and
+        not(mapping.mapping.has_key(sourceObj.properties['cmis:objectTypeId']))):
         return
 
     sourcePath = sourceObj.getPaths()[0]  # Just deal with one path for now
@@ -125,8 +137,7 @@ def processChange(change, sourceRepo, targetRepo):
     except ObjectNotFoundException:
         print "Object does not exist in TARGET"
         sourceProps = sourceObj.properties
-        props = {'cmis:name': sourceProps['cmis:name'],
-                 'cmis:objectTypeId': sourceProps['cmis:objectTypeId']}
+        props = getProperties(sourceProps)
         targetObj = createNewObject(targetRepo, targetPath, props)
         if targetObj == None:
             return
@@ -141,6 +152,30 @@ def processChange(change, sourceRepo, targetRepo):
             contentType=sourceObj.properties['cmis:contentStreamMimeType'])
 
 
+def getProperties(sourceProps):
+    sourceTypeId = sourceProps['cmis:objectTypeId']
+    props = {'cmis:name': sourceProps['cmis:name']}
+
+    # if the source type is cmis:document, don't move any custom properties
+    # set the type and return
+    if sourceTypeId == 'cmis:document' or sourceTypeId == 'cmis:folder':
+        props['cmis:objectTypeId'] = sourceTypeId
+        return props
+
+    # otherwise, get the target object type from the mapping
+    props['cmis:objectTypeId'] = mapping.mapping[sourceTypeId]['targetType']
+    print "Target object id: %s" % mapping.mapping[sourceTypeId]['targetType']
+    
+    # get all of the target properties
+    for propKey in mapping.mapping[sourceTypeId]['properties'].keys():
+        targetPropId = mapping.mapping[sourceTypeId]['properties'][propKey]
+        if sourceProps[propKey] != None:
+            props[targetPropId] = sourceProps[propKey]
+            print "target prop: %s" % targetPropId
+            print "target val: %s" % sourceProps[propKey]
+        
+    return props
+
 def createNewObject(targetRepo, path, props):
     """
     Creates a new object given a target repo, the full path of the
@@ -151,9 +186,12 @@ def createNewObject(targetRepo, path, props):
     print "Creating new object in: %s" % path
     parentPath = '/'.join(path.split('/')[0:-1])
 
+    # determine base type
+    typeDef = targetRepo.getTypeDefinition(props['cmis:objectTypeId'])
+
     parentFolder = getParentFolder(targetRepo, parentPath)
     targetObj = None
-    if (props['cmis:objectTypeId'] == 'cmis:document'):
+    if (typeDef.baseId == 'cmis:document'):
         try:
             targetObj = parentFolder.createDocumentFromString(
                 props['cmis:name'],
