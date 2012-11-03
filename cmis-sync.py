@@ -9,16 +9,6 @@ import pickle
 import settings
 import mapping
 
-'''
-for sourceTypeId in mapping.mapping.items():
-    print sourceTypeId[1]
-    print mapping.mapping.has_key('D:cmisbook:video')
-    for propKey in mapping.mapping['D:cmisbook:video']['properties'].keys():
-        print "key:%s value:%s" % (propKey, mapping.mapping['D:cmisbook:video']['properties'][propKey])
-    #print sourceTypeId['targetType']
-sys.exit(-1)
-'''
-
 SAVE_FILE = 'lastSync.p'
 
 
@@ -54,12 +44,6 @@ def sync():
     dumpRepoHeader(targetRepo, "TARGET")
     print "    Path: %s" % settings.TARGET_ROOT
     
-    # Make sure target supports contentStreamUpdatability
-    if (targetRepo.getCapabilities()['ContentStreamUpdatability'] !=
-        'anytime'):
-        print "Target repository must have ContentStreamUpdatability=anytime"
-        sys.exit(-1)
-
     # Get last token synced from savefile
     # Using the repository IDs so that you can use this script against
     # multiple source-target pairs and it will remember where you are
@@ -123,56 +107,74 @@ def processChange(change, sourceRepo, targetRepo):
     print "Source Path: %s" % sourcePath
     targetPath = settings.TARGET_ROOT + sourcePath
 
+    sourceProps = sourceObj.properties
+
     # Determine if the object exists in the target
     targetObj = None
     try:
         targetObj = targetRepo.getObjectByPath(targetPath)
-
+        targetObj = targetObj.getLatestVersion()
+        print "Version label:%s" % targetObj.properties['cmis:versionLabel']
+        
         # If it does, update its properties
-
-        # As only the name and type are being migrated, and because name
-        # is part of the path, this part is really not needed
-        #targetObj.updateProperties(props)
+        props = getProperties(targetRepo, sourceProps, 'update')
+        if (len(props) > 0):
+            print props
+            targetObj = targetObj.updateProperties(props)
 
     except ObjectNotFoundException:
         print "Object does not exist in TARGET"
-        sourceProps = sourceObj.properties
-        props = getProperties(sourceProps)
+        props = getProperties(targetRepo, sourceProps, 'create')        
         targetObj = createNewObject(targetRepo, targetPath, props)
         if targetObj == None:
             return
         
     # Then, update its content if that is possible
-    targetObj.reload()
+    #targetObj.reload()
     if (sourceObj.allowableActions['canGetContentStream'] == True and
-        targetObj.allowableActions['canSetContentStream'] == True):
-        print "Updating content stream in target object"
-        targetObj.setContentStream(
+        targetObj.allowableActions['canCheckOut'] == True):
+        print "Updating content stream in target object version:%s" % targetObj.properties['cmis:versionLabel']
+        print "target props:%s" % targetObj.properties['cmisbook:copyright']
+        pwc = targetObj.checkout()
+        pwc.setContentStream(
             sourceObj.getContentStream(),
             contentType=sourceObj.properties['cmis:contentStreamMimeType'])
-
-
-def getProperties(sourceProps):
+        pwc.checkin(major=False)
+        print "Checkin is done, version:%s" % targetObj.properties['cmis:versionLabel']
+        targetObj.reload()
+        print "target props:%s" % targetObj.properties['cmisbook:copyright']
+        
+def getProperties(targetRepo, sourceProps, mode):
     sourceTypeId = sourceProps['cmis:objectTypeId']
-    props = {'cmis:name': sourceProps['cmis:name']}
+    props = {}
+
+    if mode == 'create':
+        props['cmis:name'] = sourceProps['cmis:name']
+        props['cmis:objectTypeId'] = sourceTypeId            
 
     # if the source type is cmis:document, don't move any custom properties
     # set the type and return
     if sourceTypeId == 'cmis:document' or sourceTypeId == 'cmis:folder':
-        props['cmis:objectTypeId'] = sourceTypeId
         return props
 
     # otherwise, get the target object type from the mapping
-    props['cmis:objectTypeId'] = mapping.mapping[sourceTypeId]['targetType']
-    print "Target object id: %s" % mapping.mapping[sourceTypeId]['targetType']
+    targetObjectId = mapping.mapping[sourceTypeId]['targetType']
+    if mode == 'create':
+        props['cmis:objectTypeId'] = targetObjectId
+    print "Target object id: %s" % targetObjectId
+
+    targetTypeDef = targetRepo.getTypeDefinition(targetObjectId)
     
     # get all of the target properties
     for propKey in mapping.mapping[sourceTypeId]['properties'].keys():
         targetPropId = mapping.mapping[sourceTypeId]['properties'][propKey]
         if sourceProps[propKey] != None:
-            props[targetPropId] = sourceProps[propKey]
-            print "target prop: %s" % targetPropId
-            print "target val: %s" % sourceProps[propKey]
+            if targetTypeDef.properties[targetPropId].getUpdatability() == 'readwrite':
+                props[targetPropId] = sourceProps[propKey]
+                print "target prop: %s" % targetPropId
+                print "target val: %s" % sourceProps[propKey]
+            else:
+                print "Warning, target property changed but isn't writable in target:%s" % targetPropId
         
     return props
 
